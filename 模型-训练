@@ -1,0 +1,212 @@
+from __future__ import print_function, division
+
+import cv2
+import os
+import torch
+from torch import nn, optim
+import pandas as pd
+from skimage import io, transform
+import numpy as np
+import matplotlib.pyplot as plt
+from torch.utils.data import Dataset, DataLoader
+import torchvision
+from torchvision import transforms, utils
+from PIL import Image
+from Allnet import DIV
+from Allnet import road
+
+import random
+
+
+#from Net2 import DoubleConv
+from Net2 import roadUnet
+import sys, getopt
+
+#数据集
+class AllDataset(Dataset):
+    def __init__(self,csv_file,root_dir,seg_dir,x_transform=None,y_transform=None):
+        self.mark=pd.read_csv(csv_file)
+        self.root_dir=root_dir
+        self.seg_dir=seg_dir
+        self.x_transform=x_transform
+        self.y_transform=y_transform
+        self.H=transforms.RandomHorizontalFlip(p=1)
+        self.V=transforms.RandomVerticalFlip(p=1)
+    def __len__(self):
+        return len(self.mark)
+    def __getitem__(self,idx):
+        img_file=os.path.join(self.root_dir+str(idx+1)+'.png')
+        seg_img_file=os.path.join(self.seg_dir+str(idx+1)+'.png')          
+        
+        
+        image=Image.open(img_file)
+        seg_image=Image.open(seg_img_file)
+        #io.imread
+
+        p1=random.random()
+        if p1>0.5:
+            image=self.H(image)
+            seg_image=self.H(seg_image)
+        p2=random.random()
+        if p2>0.5:
+            image=self.V(image)
+            seg_image=self.V(seg_image)
+        
+        image=np.array(image)
+        seg_image=np.array(seg_image)
+        low_image=cv2.resize(image,(20,20),interpolation=cv2.INTER_AREA) 
+        low_seg_image=cv2.resize(seg_image,(20,20),interpolation=cv2.INTER_AREA) 
+        
+        haveroad=self.mark.iloc[idx,2]
+        noroad=self.mark.iloc[idx,3]        
+        roadmark=np.array((haveroad,noroad),dtype='float')
+        
+        if self.x_transform:
+            image=self.x_transform(image)
+            low_image=self.x_transform(low_image)
+            
+        if self.y_transform:
+            seg_image=self.y_transform(seg_image)
+            low_seg_image=self.y_transform(low_seg_image)
+        
+        
+        
+        return image,seg_image,low_image,low_seg_image,roadmark,haveroad
+
+
+DEVICE=torch.device("cuda")
+
+loss_func1=torch.nn.CrossEntropyLoss()
+loss_func2=torch.nn.BCEWithLogitsLoss()  
+
+  
+model1=DIV(3,1).to(DEVICE) 
+model1.train()
+
+
+model2=road(3,1).to(DEVICE)
+model2.train()
+
+optimizer1=torch.optim.SGD(model1.parameters(),lr=0.01,weight_decay=0)
+optimizer2=torch.optim.Adam(model2.parameters(),lr=0.05,weight_decay=0)
+
+scheduler1=torch.optim.lr_scheduler.StepLR(optimizer1,10, gamma=0.9)
+scheduler2=torch.optim.lr_scheduler.StepLR(optimizer2,10, gamma=0.9)
+
+root_dir='train160/init/'
+seg_dir='train160/segmentation/'
+csv_file='trainmark.csv'
+
+EPOCH=300
+
+x_transform=transforms.Compose(
+            [transforms.ToTensor(),
+             #transforms.Normalize((0.1307,), (0.3081,))
+             transforms.Normalize(mean = [0.2625,0.2789,0.2404],std = [0.1672, 0.1637, 0.1591])
+             ])
+    
+y_transform=transforms.Compose(
+        [transforms.ToTensor()]
+        )        
+roadDataset=AllDataset(csv_file=csv_file,
+        root_dir=root_dir,
+         seg_dir=seg_dir,
+         x_transform=x_transform,y_transform=y_transform)   
+dataloader = DataLoader(roadDataset, batch_size=16,shuffle=True, num_workers=6)
+
+
+
+
+Eloss1=[]
+Eloss2=[]
+flag1=0
+flag2=0
+
+F=10
+Y=0.02
+
+for epoch in range(EPOCH):
+    print('Epoch{}/{}'.format(epoch+1,EPOCH))
+    print('-'*10)
+    dt_size=len(dataloader.dataset)
+    epoch_loss1=0
+    epoch_loss2=0
+    step=0    
+    
+    
+    for x1,y1,x2,y2,r,z in dataloader:
+        step+=1
+        
+        
+        if flag1>=F and flag2>=F:
+            break
+        
+        
+        x1=x1.to(DEVICE)        
+        x2=x2.to(DEVICE)
+        marks=y1.to(DEVICE)
+        z=z.to(DEVICE)
+        
+        A,I=model1(x2)
+        
+        if(flag1<F):
+        
+            optimizer1.zero_grad()
+            
+            loss1 = loss_func1(A, z)  
+            loss1.backward() 
+            optimizer1.step()
+            epoch_loss1+=loss1.item()
+            print("%d/%d,train_loss1:%.3f"%(step,
+                                       (dt_size-1)//dataloader.batch_size+1,
+                                       loss1.item()))
+        
+        
+        
+        outputs=model2(x1,I.detach())  
+        
+        if(flag2<F):    
+            optimizer2.zero_grad()
+            
+            loss2 = loss_func2(outputs,marks)
+            loss2.backward()
+            optimizer2.step()
+            epoch_loss2+=loss2.item()
+            print("%d/%d,train_loss2:%.3f"%(step,
+                                           (dt_size-1)//dataloader.batch_size+1,
+                                           loss2.item()))
+            
+    
+    if(epoch_loss1/step<Y):
+        flag1+=1
+    else:
+        flag1=0
+    if(epoch_loss2/step<Y):
+        flag2+=1
+    else:
+        flag2=0
+    
+    if flag1>=F:
+        print("epoch %d loss1:%.3f"%(epoch+1,0))
+        Eloss1.append([epoch+1,0])
+        model1.eval()
+    else:
+        print("epoch %d loss1:%.3f"%(epoch+1,epoch_loss1/step))    
+        Eloss1.append([epoch+1,epoch_loss1/step])
+        scheduler1.step()
+        torch.save(model1,'Allj.pkl')
+    if flag2>=F:        
+        print("epoch %d loss2:%.3f"%(epoch+1,0))
+        Eloss2.append([epoch+1,0])
+        model2.eval()
+    else:
+        print("epoch %d loss2:%.3f"%(epoch+1,epoch_loss2/step))
+        Eloss2.append([epoch+1,epoch_loss2/step])
+        scheduler2.step()
+        torch.save(model2,'Allr.pkl')
+    
+#输出loss数据    
+Eloss1=pd.DataFrame(columns=['epoch','loss'],data=Eloss1)            
+Eloss1.to_csv('Allj.csv',encoding='utf-8')
+Eloss2=pd.DataFrame(columns=['epoch','loss'],data=Eloss2)            
+Eloss2.to_csv('Allr.csv',encoding='utf-8')

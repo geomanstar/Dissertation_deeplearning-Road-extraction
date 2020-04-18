@@ -1,0 +1,37 @@
+import matplotlib.pyplot as plt # plt 用于显示图片
+import matplotlib.image as mpimg # mpimg 用于读取图片
+import cv2 as cv
+import numpy as np
+import imageio
+import os
+import pandas as pd
+
+#判断是否有道路
+def have_road(path,index):
+    gray=mpimg.imread(path+str(index)+'.png')
+    #gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)#转为灰度图像
+    if (gray==1).all()==True:
+        return 0
+    else:
+        return 1
+    
+
+
+
+def get_mark(path,img_path,savepath):
+    img_list=os.listdir(path)    
+    img_mark=[]
+    for i in range(len(img_list)):
+        mark=have_road(img_path,i+1)
+        if mark==0:
+            img_mark.append([i+1,0,1])
+        else:
+            img_mark.append([i+1,1,0])
+    
+    
+    img_mark=pd.DataFrame(columns=['index','have_road','no_road'],data=img_mark)
+    img_mark.to_csv(savepath,encoding='utf-8')
+    
+        
+#将是否含有道路的数据保存在csv中
+get_mark('T411/init/','T411/segmentation/','T411mark.csv')

@@ -1,0 +1,164 @@
+
+from __future__ import print_function, division
+
+from PIL import Image 
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import os
+import torch
+import imageio
+from torch import nn, optim
+import pandas as pd
+from skimage import io, transform
+import numpy as np
+import matplotlib.pyplot as plt
+from torch.utils.data import Dataset, DataLoader
+import torchvision
+
+from judgenet import DIV_32Unet
+from judgenet import DoubleConv
+
+from torchvision import transforms, utils
+import cv2
+import sys, getopt
+from skimage import io,data,color
+import time
+import datetime    
+
+def size_picture(path,w):
+    img=mpimg.imread(path)
+    return img.shape[0]//w,img.shape[1]//w
+
+
+def toOne(picture,D_max=None,D_min=None):
+    if D_max==None:
+        D_max=np.max(picture)
+    D_min=np.min(picture)
+    step=D_max-D_min
+    rows,cols=picture.shape
+    for i in range(rows):
+        for j in range(cols):
+            picture[i,j]=(picture[i,j]-D_min)/step
+    return picture
+    
+    
+def toDiv(picture,TH):
+    rows,cols=picture.shape
+
+    for t in range(rows):
+        for m in range(cols):
+            if picture[t,m]<TH:
+                picture[t,m]=255
+            else:
+                picture[t,m]=0
+    return picture
+
+
+def have_road(gray):
+    
+    gray=gray[0][0]
+    gray=gray.detach().numpy()    
+    m=0
+    for i in range(20):
+        for j in range(20):
+            if gray[i][j]>0:
+                return True
+    return False
+
+
+
+img_A = mpimg.imread('RoadDataset/1/Ottawa-1.tif')
+
+hang=img_A.shape[0]//160
+lie=img_A.shape[1]//160
+
+DEVICE=torch.device("cpu")
+#导入模型
+model1 = torch.load('Allj.pkl')
+model1=model1.to(DEVICE)
+model1.eval()
+
+model2 = torch.load('Allr.pkl')
+model2=model2.to(DEVICE)
+model2.eval()
+
+
+EPOCH=15
+
+Net_transform=transforms.Compose(
+            [transforms.ToTensor(),
+             transforms.Normalize(mean = [0.2625,0.2789,0.2404],std = [0.1672, 0.1637, 0.1591])
+             ])   
+    
+DIV_transform=transforms.Compose(
+            [transforms.ToTensor(),
+             transforms.Normalize(mean = [0.2625,0.2789,0.2404],std = [0.1672, 0.1637, 0.1591])
+             ])
+    
+
+index=0
+TH=0
+img=[]
+tim=[]
+
+for i in range(hang):
+    for j in range(lie):
+        
+        a_img=img_A[:,:,:][i*160:(i+1)*160,j*160:(j+1)*160]
+        low_a_img=cv2.resize(a_img,(20,20),interpolation=cv2.INTER_AREA)
+                
+        x2=DIV_transform(low_a_img)
+        x2=x2.unsqueeze(dim=0)
+        x2=x2.to(DEVICE)
+        x1=Net_transform(a_img)
+        x1=x1.unsqueeze(dim=0)
+               
+        start = datetime.datetime.now()
+        
+        haveroad,output1=model1(x2)
+        
+        haveroad=haveroad.argmax().numpy()
+        
+        if haveroad==1:
+
+            result=model2(x1,output1)
+            end = datetime.datetime.now()       
+            result=result[0][0]
+
+
+            result=result.detach().numpy()
+        
+            result=color.rgb2gray(result)       
+            result=toDiv(result,TH)
+            
+        else:             
+            print('-----')
+            result=np.zeros((160,160))
+            end = datetime.datetime.now()  
+        
+
+        
+        tim.append([index,end-start])
+        
+        index+=1
+        print(index)
+        img.append(result)
+
+
+
+catimg=[]
+
+for i in range(hang):
+    worki=np.concatenate(img[i*lie:i*lie+lie],axis=1)
+    catimg.append(worki)
+
+result_img=np.concatenate(catimg[:],axis=0)
+
+result_img=Image.fromarray(result_img)          
+result_img=result_img.convert('L')
+#保存最终图像
+result_img.save('result.png')
+
+Eloss1=pd.DataFrame(columns=['index','time'],data=tim)            
+#保存运行时间
+Eloss1.to_csv('time.csv',encoding='utf-8')

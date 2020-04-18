@@ -1,1 +1,71 @@
+#数据集下载：https://github.com/yhlleo/RoadNet
 
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import numpy as np
+import imageio
+import cv2
+import pandas as pd
+from skimage import io,data,color
+
+def size_picture(path,w):
+    img=mpimg.imread(path)
+    return img.shape[0]//w,img.shape[1]//w
+    
+Tpath='T411' #文件名
+
+#图片裁剪
+def cut_picture(path,path_index,img_index,Tpath,u=0,high=160):  
+    img_A = mpimg.imread(path+str(path_index)+'/Ottawa-'+str(path_index)+'.tif')
+    img_B = mpimg.imread(path+str(path_index)+'/segmentation.png')
+    hang=img_A.shape[0]//high
+    lie=img_A.shape[1]//high    
+    for i in range(hang):
+        for j in range(lie):
+            if (i+1)*high+u>hang*high or (j+1)*high+u>lie*high:
+                continue
+            a_img=img_A[:,:,:][i*high+u:(i+1)*high+u,j*high+u:(j+1)*high+u]
+            b_img=img_B[:,:,:][i*high+u:(i+1)*high+u,j*high+u:(j+1)*high+u]
+            
+            b_img=color.rgb2gray(b_img)
+
+            rows,cols=b_img.shape
+
+            for t in range(rows):
+                for m in range(cols):
+                    if b_img[t,m]<0.5:
+                        b_img[t,m]=0
+                    else:
+                        b_img[t,m]=1   
+            imageio.imwrite(Tpath+'/init/'+str(img_index)+'.png',a_img)
+            imageio.imwrite(Tpath+'/segmentation/'+str(img_index)+'.png',b_img)
+            
+            img_index+=1
+            
+    return hang,lie,img_index
+index=1
+size=[]
+
+#裁剪得到训练集
+for i in range(15):
+    if i==0:
+        continue
+    hang,lie,index=cut_picture('D:/python_code/RoadDataset/',i+1,index,Tpath)
+    size.append([hang,lie])
+    hang,lie,index=cut_picture('D:/python_code/RoadDataset/',i+1,index,Tpath,u=20)
+    hang,lie,index=cut_picture('D:/python_code/RoadDataset/',i+1,index,Tpath,u=40)
+    hang,lie,index=cut_picture('D:/python_code/RoadDataset/',i+1,index,Tpath,u=60)
+    hang,lie,index=cut_picture('D:/python_code/RoadDataset/',i+1,index,Tpath,u=80)
+    
+#裁剪得到测试集
+#for i in range(6):
+#    if i==0:
+#        hang,lie,index=cut_picture('D:/python_code/RoadDataset/',i+1,index,Tpath)
+#    else:
+#        hang,lie,index=cut_picture('D:/python_code/RoadDataset/',i+15,index,Tpath)
+#    size.append([hang,lie])
+
+
+
+img_size=pd.DataFrame(columns=['hang','lie'],data=size)
+img_size.to_csv(Tpath+'_size.csv',encoding='utf-8')
